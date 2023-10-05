@@ -1,0 +1,11 @@
+<launch>
+  <node pkg="rgbd_slam" 		type="rgbd_slam_node" name="rgbd_slam_node" output="screen">
+		<param name="rgb_topic" 	     				type="string" 	value="/camera/rgb/image_raw" />
+		<param name="depth_topic" 	     			type="string" 	value="/camera/depth/image_raw" />
+		<param name="calibration_file" 	 			type="string" 	value="/home/ehambram/Datasets/xtion_calibration/rgbd_calibration.txt" />
+
+		<!--Feature detection-->
+		<param name="voxel_size" 							type="double" 	value="0.05" />
+		<param name="max_points_per_voxel" 		type="int" 			value="5" />
+	</node>
+</launch>

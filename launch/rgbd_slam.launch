@@ -1,0 +1,20 @@
+<launch>
+  <node pkg="rgbd_slam" 		type="rgbd_slam_node" name="rgbd_slam_node" output="screen">
+		<param name="rgb_topic" 	     				type="string" 	value="/camera/rgb/image_raw" />
+		<param name="depth_topic" 	     			type="string" 	value="/camera/depth/image_raw" />
+		<param name="calibration_file" 	 			type="string" 	value="/home/ehambram/Datasets/xtion_calibration/rgbd_calibration.txt" />
+
+		<!--Feature detection-->
+		<param name="horizontal_tiles_masks" 	type="int" 	value="4" />
+		<param name="vertical_tiles_masks" 		type="int" 	value="3" />
+		<param name="gauss_filter_size" 			type="int" 	value="5" />
+		<param name="rgb_im_width" 						type="int" 	value="640" />
+		<param name="rgb_im_height" 					type="int" 	value="480" />
+		<param name="min_features_to_init" 		type="int" 	value="70" />
+		<param name="min_features_in_mask_to_detect_new" 		type="int" 	value="5" />
+		<param name="max_optical_flow_error" 								type="double" 	value="5" />
+		<param name="min_features_in_mask_distribution" 		type="int" 	value="3" />
+		<param name="min_feature_distribution" 							type="double" 	value="0.4" />
+		<param name="min_features_to_track_only" 						type="int" 	value="50" />
+	</node>
+</launch>
