@@ -1,66 +1,66 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.5)
 project(rgbd_slam)
+
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
 SET(CMAKE_BUILD_TYPE Release)
-set(OpenCV_DIR "/home/ehambram/workspaces/libraries/OpenCV/opencv-4.5.1/build")
-find_package(OpenCV 4.5.1 REQUIRED)
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
+set(OpenCV_DIR "/home/ehambram/workspaces/libraries/opencv/opencv-4.x/install/lib/cmake/opencv4")
+find_package(OpenCV 4.8 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
-find_package(tsl-robin-map REQUIRED)
-find_package(catkin REQUIRED COMPONENTS
-  cv_bridge
-  image_transport
-  message_filters
-  pcl_conversions
-  pcl_ros
-  roscpp
-  rospy
-  sensor_msgs
-  std_msgs
-  tf
-  tf_conversions
-  visualization_msgs
-  geometry_msgs
-)
-
-LIST(APPEND CMAKE_MODULE_PATH /home/ehambram/workspaces/libraries/g2o/cmake_modules)
-find_package(G2O REQUIRED)
-# Find the core elements
-FIND_G2O_LIBRARY(G2O_STUFF_LIBRARY stuff)
-FIND_G2O_LIBRARY(G2O_CORE_LIBRARY core)
-# Find the CLI library
-FIND_G2O_LIBRARY(G2O_CLI_LIBRARY cli)
-# Find the pluggable solvers
-FIND_G2O_LIBRARY(G2O_SOLVER_CHOLMOD solver_cholmod)
-FIND_G2O_LIBRARY(G2O_SOLVER_CSPARSE solver_csparse)
-FIND_G2O_LIBRARY(G2O_SOLVER_CSPARSE_EXTENSION csparse_extension)
-FIND_G2O_LIBRARY(G2O_SOLVER_DENSE solver_dense)
-FIND_G2O_LIBRARY(G2O_SOLVER_PCG solver_pcg)
-FIND_G2O_LIBRARY(G2O_SOLVER_SLAM2D_LINEAR solver_slam2d_linear)
-FIND_G2O_LIBRARY(G2O_SOLVER_STRUCTURE_ONLY solver_structure_only)
-FIND_G2O_LIBRARY(G2O_SOLVER_EIGEN solver_eigen)
-# Find the predefined types
-FIND_G2O_LIBRARY(G2O_TYPES_DATA types_data)
-FIND_G2O_LIBRARY(G2O_TYPES_ICP types_icp)
-FIND_G2O_LIBRARY(G2O_TYPES_SBA types_sba)
-FIND_G2O_LIBRARY(G2O_TYPES_SCLAM2D types_sclam2d)
-FIND_G2O_LIBRARY(G2O_TYPES_SIM3 types_sim3)
-FIND_G2O_LIBRARY(G2O_TYPES_SLAM2D types_slam2d)
-FIND_G2O_LIBRARY(G2O_TYPES_SLAM3D types_slam3d)
+find_package(PCL REQUIRED)
+set(TSL_INCLUDE_DIRS "/home/ehambram/workspaces/libraries/robin-map/include") # Header only library
+set(g2o_DIR "/home/ehambram/workspaces/libraries/g2o/install/lib/cmake/g2o")
+find_package(g2o REQUIRED)
 set(G2O_USE_VENDORED_CERES true)
-SET(G2O_LIBS 
-${G2O_STUFF_LIBRARY} ${G2O_CORE_LIBRARY} ${G2O_CLI_LIBRARY} ${G2O_SOLVER_CHOLMOD} ${G2O_SOLVER_CSPARSE}
-${G2O_SOLVER_CSPARSE_EXTENSION} ${G2O_SOLVER_DENSE} ${G2O_SOLVER_PCG} ${G2O_SOLVER_SLAM2D_LINEAR} 
-${G2O_SOLVER_STRUCTURE_ONLY} ${G2O_SOLVER_EIGEN} ${G2O_TYPES_DATA} ${G2O_TYPES_ICP} ${G2O_TYPES_SBA}
-${G2O_TYPES_SCLAM2D} ${G2O_TYPES_SIM3} ${G2O_TYPES_SLAM2D} ${G2O_TYPES_SLAM3D})
 
-catkin_package()
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(pcl_ros REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 include_directories(
   include
-  ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+  ${TSL_INCLUDE_DIRS}
 )
 
-add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDOdometry.cpp src/ICPOdometry.cpp src/VoxelHashMap.cpp)
-target_link_libraries(rgbd_slam_node ${catkin_LIBRARIES} ${OpenCV_LIBS} OpenMP::OpenMP_CXX ${G2O_LIBS} tsl::robin_map)
+#add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDOdometry.cpp src/ICPOdometry.cpp src/VoxelHashMap.cpp)
+#ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
+#target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX 
+#                      g2o::core g2o::stuff g2o::g2o_cli_library  g2o::solver_cholmod g2o::solver_csparse g2o::csparse_extension
+#                      g2o::solver_dense g2o::solver_pcg g2o::solver_slam2d_linear g2o::solver_structure_only g2o::solver_eigen
+#                      g2o::types_icp g2o::types_sba g2o::types_sclam2d g2o::types_sim3 g2o::types_slam2d 
+#                      g2o::types_slam3d)
+
+# install the include folder
+# install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+
+#install(TARGETS
+#  rgbd_slam_node
+#  DESTINATION lib/${PROJECT_NAME}
+#)
+
+#install(DIRECTORY
+#  launch
+#  DESTINATION share/${PROJECT_NAME}/
+#)
+
+#ament_package()
