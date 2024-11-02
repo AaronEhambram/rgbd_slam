@@ -12,8 +12,8 @@ endif()
 SET(CMAKE_BUILD_TYPE Release)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
-set(OpenCV_DIR "/home/ehambram/workspaces/libraries/opencv/opencv-4.x/install/lib/cmake/opencv4")
-find_package(OpenCV 4.8 REQUIRED)
+set(OpenCV_DIR "/home/ehambram/workspaces/libraries/opencv/opencv-4.x/install/lib/cmake/opencv-4.10.0-dev")
+find_package(OpenCV 4.10 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(PCL REQUIRED)
@@ -42,6 +42,10 @@ include_directories(
   ${TSL_INCLUDE_DIRS}
 )
 
+add_executable(rgbd_slam_node src/rgbd_slam_node.cpp)
+ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
+target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
+
 #add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDOdometry.cpp src/ICPOdometry.cpp src/VoxelHashMap.cpp)
 #ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
 #target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX 
@@ -51,16 +55,16 @@ include_directories(
 #                      g2o::types_slam3d)
 
 # install the include folder
-# install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
-#install(TARGETS
-#  rgbd_slam_node
-#  DESTINATION lib/${PROJECT_NAME}
-#)
+install(TARGETS
+  rgbd_slam_node
+  DESTINATION lib/${PROJECT_NAME}
+)
 
-#install(DIRECTORY
-#  launch
-#  DESTINATION share/${PROJECT_NAME}/
-#)
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME}/
+)
 
-#ament_package()
+ament_package()
