@@ -42,7 +42,7 @@ include_directories(
   ${TSL_INCLUDE_DIRS}
 )
 
-add_executable(rgbd_slam_node src/rgbd_slam_node.cpp)
+add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDSlam.cpp)
 ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
 target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
 
