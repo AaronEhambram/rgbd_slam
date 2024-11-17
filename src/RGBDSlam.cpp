@@ -2,6 +2,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <iomanip>
+#include <omp.h>
 
 RGBDSlam::RGBDSlam(const CalibartionParameters &calibration_params, const RGBDSLAMParameters &slam_params)
 {
@@ -96,8 +97,9 @@ void RGBDSlam::DetectNewFeatures(const std::vector<int> &detection_mask_indices)
   }
 }
 
-void RGBDSlam::DetectTrackFeatures()
+TrackingResult RGBDSlam::DetectTrackFeatures()
 {
+  TrackingResult tracking_result;
   if (!feature_tracking_initialized_)
   {
     // Detect new features in all detection masks
@@ -134,33 +136,52 @@ void RGBDSlam::DetectTrackFeatures()
     const uchar *tracking_status_cpu_col = tracking_status_cpu.ptr<uchar>(0);
     const cv::Vec2f *features_new_cpu_col = features_new_cpu.ptr<cv::Vec2f>(0);
     const float *err_cpu_col = err_cpu.ptr<float>(0);
-    std::vector<cv::KeyPoint> tracked_keypoints;
+
+    // Containers for current and prevous key points
+    tracking_result.current_keypoints.reserve(tracked_keypoints_cpu_.size());
+    tracking_result.previous_keypoints.reserve(tracked_keypoints_cpu_.size());
+
+    // Container for the tracking error
+    tracking_result.tracking_error.reserve(tracked_keypoints_cpu_.size());
+
+    // Container for the color
     std::vector<cv::Scalar> tracked_feature_color;
-    tracked_keypoints.reserve(tracked_keypoints_cpu_.size());
     tracked_feature_color.reserve(tracked_feature_color_.size());
+
+    // Container for the descriptors
     cv::Mat tracked_descriptors;
+
+    // iterate through each keypoint and store the data to the containers
     for (int i = 0; i < tracking_status_cpu.cols; ++i)
     {
       if ((int)tracking_status_cpu_col[i] == 1 && err_cpu_col[i] <= slam_params_.max_optical_flow_error)
       {
+        // get the new feature position
         const cv::Vec2f &f = features_new_cpu_col[i];
+
         // update the keypoint position
+        tracking_result.previous_keypoints.emplace_back(tracked_keypoints_cpu_[i]);
         tracked_keypoints_cpu_[i].pt = {f(0), f(1)};
-        tracked_keypoints.emplace_back(tracked_keypoints_cpu_[i]);
+        tracking_result.current_keypoints.emplace_back(tracked_keypoints_cpu_[i]);
+
+        // store error
+        tracking_result.tracking_error.emplace_back(err_cpu_col[i]);
+        // store descriptor
         tracked_descriptors.push_back(tracked_descriptors_cpu_.row(i));
+        // store color
         tracked_feature_color.emplace_back(tracked_feature_color_[i]);
       }
     }
 
     // delete the untracked features by overwriting
-    tracked_keypoints_cpu_ = tracked_keypoints;
+    tracked_keypoints_cpu_ = tracking_result.current_keypoints;
     tracked_feature_color_ = tracked_feature_color;
     tracked_descriptors_cpu_ = cv::Mat(tracked_descriptors.size(), tracked_descriptors.type());
     tracked_descriptors.copyTo(tracked_descriptors_cpu_);
 
     // Identify masks with too less keypoints
     std::vector<int> features_in_mask(detection_masks_cpu_.size(), 0);
-    for (const cv::KeyPoint& kp : tracked_keypoints_cpu_)
+    for (const cv::KeyPoint &kp : tracked_keypoints_cpu_)
     {
       for (int i = 0; i < detection_masks_cpu_.size(); ++i)
       {
@@ -173,9 +194,9 @@ void RGBDSlam::DetectTrackFeatures()
       }
     }
     std::vector<int> new_detection_mask_indices;
-    for(int i = 0; i < features_in_mask.size(); i++)
+    for (int i = 0; i < features_in_mask.size(); i++)
     {
-      if(features_in_mask[i] < slam_params_.min_features_in_mask_to_detect_new)
+      if (features_in_mask[i] < slam_params_.min_features_in_mask_to_detect_new)
       {
         new_detection_mask_indices.emplace_back(i);
       }
@@ -185,7 +206,12 @@ void RGBDSlam::DetectTrackFeatures()
     DetectNewFeatures(new_detection_mask_indices);
   }
 
-  std::cout << tracked_keypoints_cpu_.size() << std::endl;
+  return tracking_result;
+}
+
+Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_result)
+{
+  return Eigen::Affine3d{};
 }
 
 cv::Mat RGBDSlam::DrawKeypoints(const cv::Mat &rgb_im)
@@ -209,14 +235,18 @@ void RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::M
 
   // upload images to GPU
   rgb_im_.upload(rgb_im);
-  depth_im_.upload(depth_im);
   cv::cuda::cvtColor(rgb_im_, rgb_im_, cv::COLOR_BGR2GRAY);
+  depth_im.copyTo(depth_im_);
 
   // detect or track features
-  DetectTrackFeatures();
+  TrackingResult tracking_result = DetectTrackFeatures();
+
+  // estimate relative pose between previous and current time
+  Eigen::Affine3d prev_T_cur = EstimateRelativePose(tracking_result);
 
   // last actions
   rgb_im_.copyTo(rgb_im_prev_);
+  depth_im_.copyTo(depth_im_prev_);
 
   // show the image
   cv::Mat keypoint_rgb_im = DrawKeypoints(rgb_im);
