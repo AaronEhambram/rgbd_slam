@@ -10,6 +10,7 @@
 #include <thread>
 #include "rgbd_slam/types.hpp"
 #include <tuple>
+#include <optional>
 
 struct TrackingResult
 {
@@ -44,7 +45,8 @@ private:
   cv::Mat KeypointsToMat(const std::vector<cv::KeyPoint> &keypoints);
 
   // Pose estimation
-  Eigen::Affine3d EstimateRelativePose(const TrackingResult& tracking_result);
+  Eigen::Affine3d EstimateRelativePose(const TrackingResult& tracking_result) const;
+  std::optional<Eigen::Vector3d> Get3DPoint(const cv::KeyPoint& keypoint) const;
 
   // Visualization
   cv::Mat DrawKeypoints(const cv::Mat &rgb_im);

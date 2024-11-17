@@ -209,8 +209,70 @@ TrackingResult RGBDSlam::DetectTrackFeatures()
   return tracking_result;
 }
 
-Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_result)
+std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint) const
 {
+  uint16_t depth_in_mm = depth_im_prev_.at<uint16_t>(keypoint.pt.y, keypoint.pt.x);
+  std::optional<Eigen::Vector3d> point{};
+  if (depth_in_mm > 0)
+  {
+    const double depth = 1e-3 * depth_in_mm;
+    const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
+    const double &fy_rgb = calibration_params_.rgb_cam.at<double>(1, 1);
+    const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
+    const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
+    return Eigen::Vector3d{depth * ((double)keypoint.pt.x - cx_rgb) / fx_rgb, (double)depth * ((double)keypoint.pt.y - cy_rgb) / fy_rgb, depth};
+  }
+  return point;
+}
+
+Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_result) const
+{
+  Eigen::MatrixXd A(tracking_result.previous_keypoints.size() * 2, 10);
+  A.setZero();
+
+#pragma omp parallel for
+  for (int kp_counter = 0; kp_counter < tracking_result.previous_keypoints.size(); kp_counter++)
+  {
+    const cv::KeyPoint &prev_kp = tracking_result.previous_keypoints[kp_counter];
+    const cv::KeyPoint &cur_kp = tracking_result.current_keypoints[kp_counter];
+
+    // 1. Determine 3D points from previous frame
+    std::optional<Eigen::Vector3d> opt_point_3d_prev = Get3DPoint(prev_kp);
+
+    if (opt_point_3d_prev.has_value())
+    {
+      const Eigen::Vector3d &point_3d_prev = opt_point_3d_prev.value();
+      // 2. Build Matrix
+      int row_index = kp_counter * 2;
+      // first row
+      A(row_index, 0) = point_3d_prev.x();
+      A(row_index, 1) = point_3d_prev.y();
+      A(row_index, 2) = point_3d_prev.z();
+      A(row_index, 6) = -cur_kp.pt.x * point_3d_prev.x();
+      A(row_index, 7) = -cur_kp.pt.x * point_3d_prev.y();
+      A(row_index, 8) = -cur_kp.pt.x * point_3d_prev.z();
+      A(row_index, 9) = -cur_kp.pt.x;
+      // second row
+      A(row_index + 1, 3) = -point_3d_prev.x();
+      A(row_index + 1, 4) = -point_3d_prev.y();
+      A(row_index + 1, 5) = -point_3d_prev.z();
+      A(row_index + 1, 6) = cur_kp.pt.y * point_3d_prev.x();
+      A(row_index + 1, 7) = cur_kp.pt.y * point_3d_prev.y();
+      A(row_index + 1, 8) = cur_kp.pt.y * point_3d_prev.z();
+      A(row_index + 1, 9) = cur_kp.pt.y;
+    }
+  }
+
+  std::cout << "A Matrix Size: " << A.rows() << "x" << A.cols() << std::endl;
+
+  // 3. Delete rows with zeros
+
+  // 4. determine SVD-decomposition
+
+  // 5. Select singular vector to smalles singular vector
+
+  // 6. Decompose transformation from projection vector
+
   return Eigen::Affine3d{};
 }
 
