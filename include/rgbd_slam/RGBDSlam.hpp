@@ -47,6 +47,7 @@ private:
   // Pose estimation
   Eigen::Affine3d EstimateRelativePose(const TrackingResult& tracking_result) const;
   std::optional<Eigen::Vector3d> Get3DPoint(const cv::KeyPoint& keypoint) const;
+  double DetermineWeight(const float& tracking_error) const;
 
   // Visualization
   cv::Mat DrawKeypoints(const cv::Mat &rgb_im);

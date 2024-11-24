@@ -225,16 +225,25 @@ std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint
   return point;
 }
 
+double RGBDSlam::DetermineWeight(const float &tracking_error) const
+{
+  return std::exp(-std::pow(static_cast<double>(tracking_error), 2.0) / (2.0 * std::pow(slam_params_.max_optical_flow_error / 4.0, 2.0)));
+}
+
 Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_result) const
 {
-  Eigen::MatrixXd A(tracking_result.previous_keypoints.size() * 2, 10);
+  Eigen::MatrixXd A(tracking_result.previous_keypoints.size() * 2, 12);
   A.setZero();
+
+  Eigen::MatrixXd W(tracking_result.previous_keypoints.size() * 2, tracking_result.previous_keypoints.size() * 2);
+  W.setZero();
 
 #pragma omp parallel for
   for (int kp_counter = 0; kp_counter < tracking_result.previous_keypoints.size(); kp_counter++)
   {
     const cv::KeyPoint &prev_kp = tracking_result.previous_keypoints[kp_counter];
     const cv::KeyPoint &cur_kp = tracking_result.current_keypoints[kp_counter];
+    const float &tracking_error = tracking_result.tracking_error[kp_counter];
 
     // 1. Determine 3D points from previous frame
     std::optional<Eigen::Vector3d> opt_point_3d_prev = Get3DPoint(prev_kp);
@@ -248,31 +257,74 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
       A(row_index, 0) = point_3d_prev.x();
       A(row_index, 1) = point_3d_prev.y();
       A(row_index, 2) = point_3d_prev.z();
-      A(row_index, 6) = -cur_kp.pt.x * point_3d_prev.x();
-      A(row_index, 7) = -cur_kp.pt.x * point_3d_prev.y();
-      A(row_index, 8) = -cur_kp.pt.x * point_3d_prev.z();
-      A(row_index, 9) = -cur_kp.pt.x;
+      A(row_index, 3) = 1.0;
+      A(row_index, 8) = -cur_kp.pt.x * point_3d_prev.x();
+      A(row_index, 9) = -cur_kp.pt.x * point_3d_prev.y();
+      A(row_index, 10) = -cur_kp.pt.x * point_3d_prev.z();
+      A(row_index, 11) = -cur_kp.pt.x;
       // second row
-      A(row_index + 1, 3) = -point_3d_prev.x();
-      A(row_index + 1, 4) = -point_3d_prev.y();
-      A(row_index + 1, 5) = -point_3d_prev.z();
-      A(row_index + 1, 6) = cur_kp.pt.y * point_3d_prev.x();
-      A(row_index + 1, 7) = cur_kp.pt.y * point_3d_prev.y();
-      A(row_index + 1, 8) = cur_kp.pt.y * point_3d_prev.z();
-      A(row_index + 1, 9) = cur_kp.pt.y;
+      A(row_index + 1, 4) = -point_3d_prev.x();
+      A(row_index + 1, 5) = -point_3d_prev.y();
+      A(row_index + 1, 6) = -point_3d_prev.z();
+      A(row_index + 1, 7) = -1.0;
+      A(row_index + 1, 8) = cur_kp.pt.y * point_3d_prev.x();
+      A(row_index + 1, 9) = cur_kp.pt.y * point_3d_prev.y();
+      A(row_index + 1, 10) = cur_kp.pt.y * point_3d_prev.z();
+      A(row_index + 1, 11) = cur_kp.pt.y;
+
+      // 3. Set the weight matrix
+      W(row_index, row_index) = DetermineWeight(tracking_error);
+      W(row_index + 1, row_index + 1) = W(row_index, row_index);
     }
   }
 
   std::cout << "A Matrix Size: " << A.rows() << "x" << A.cols() << std::endl;
-
-  // 3. Delete rows with zeros
+  std::cout << "W Matrix Size: " << W.rows() << "x" << W.cols() << std::endl;
+  Eigen::MatrixXd M = A.transpose() * W * A;
+  std::cout << "M Matrix Size: " << M.rows() << "x" << M.cols() << std::endl;
 
   // 4. determine SVD-decomposition
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+  /*std::cout << "U: " << std::endl
+            << svd.matrixU() << std::endl;
+  std::cout << "Singular Values: " << std::endl
+            << svd.singularValues() << std::endl;
+  std::cout << "V: " << std::endl
+            << svd.matrixV() << std::endl;*/
 
   // 5. Select singular vector to smalles singular vector
+  Eigen::VectorXd p = svd.matrixV().col(11);
 
   // 6. Decompose transformation from projection vector
+  const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
+  const double &fy_rgb = calibration_params_.rgb_cam.at<double>(1, 1);
+  const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
+  const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
 
+  Eigen::Vector3d translation{0.0, 0.0, 0.0};
+  Eigen::Matrix3d rotation{};
+  translation.z() = p(11);
+  translation.x() = (p(3) - cx_rgb * translation.z()) / fx_rgb;
+  translation.y() = (p(7) - cy_rgb * translation.z()) / fy_rgb;
+  rotation(2, 0) = p(8);
+  rotation(2, 1) = p(9);
+  rotation(2, 2) = p(10);
+  rotation(0, 0) = (p(0) - cx_rgb * rotation(2, 0)) / fx_rgb;
+  rotation(0, 1) = (p(1) - cx_rgb * rotation(2, 1)) / fx_rgb;
+  rotation(0, 2) = (p(2) - cx_rgb * rotation(2, 2)) / fx_rgb;
+  rotation(1, 0) = (p(4) - cy_rgb * rotation(2, 0)) / fy_rgb;
+  rotation(1, 1) = (p(5) - cy_rgb * rotation(2, 1)) / fy_rgb;
+  rotation(1, 2) = (p(6) - cy_rgb * rotation(2, 2)) / fy_rgb;
+
+  Eigen::JacobiSVD<Eigen::Matrix3d> svd_rot(rotation, Eigen::ComputeThinU | Eigen::ComputeThinV);
+  Eigen::Matrix3d rotation_orthogonal = svd_rot.matrixU() * svd_rot.matrixV().transpose();
+
+  std::cout << "Translation: " << std::endl
+            << translation << std::endl;
+  std::cout << "Rotation: " << std::endl
+            << (rotation) << std::endl;
+  std::cout << "Rotation orthogoonal: " << std::endl
+            << (rotation_orthogonal) << std::endl;
   return Eigen::Affine3d{};
 }
 
