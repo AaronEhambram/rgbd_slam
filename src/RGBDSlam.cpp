@@ -59,6 +59,9 @@ RGBDSlam::RGBDSlam(const CalibartionParameters &calibration_params, const RGBDSL
   orb_detector_ = cv::cuda::ORB::create(80, 1.2f, 5, 31, 0, 2, 0, 31, 20, true);
   ftracker_ = cv::cuda::SparsePyrLKOpticalFlow::create();
   feature_tracking_initialized_ = false;
+
+  // pose estimation
+  start_T_cur.setIdentity();
 }
 
 cv::Mat RGBDSlam::KeypointsToMat(const std::vector<cv::KeyPoint> &keypoints)
@@ -278,10 +281,10 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
     }
   }
 
-  std::cout << "A Matrix Size: " << A.rows() << "x" << A.cols() << std::endl;
-  std::cout << "W Matrix Size: " << W.rows() << "x" << W.cols() << std::endl;
+  // std::cout << "A Matrix Size: " << A.rows() << "x" << A.cols() << std::endl;
+  // std::cout << "W Matrix Size: " << W.rows() << "x" << W.cols() << std::endl;
   Eigen::MatrixXd M = A.transpose() * W * A;
-  std::cout << "M Matrix Size: " << M.rows() << "x" << M.cols() << std::endl;
+  // std::cout << "M Matrix Size: " << M.rows() << "x" << M.cols() << std::endl;
 
   // 4. determine SVD-decomposition
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -293,7 +296,7 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
             << svd.matrixV() << std::endl;*/
 
   // 5. Select singular vector to smalles singular vector
-  Eigen::VectorXd p = svd.matrixV().col(11);
+  Eigen::VectorXd p_scaled = svd.matrixV().col(11);
 
   // 6. Decompose transformation from projection vector
   const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
@@ -301,31 +304,38 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
   const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
   const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
 
-  Eigen::Vector3d translation{0.0, 0.0, 0.0};
-  Eigen::Matrix3d rotation{};
-  translation.z() = p(11);
-  translation.x() = (p(3) - cx_rgb * translation.z()) / fx_rgb;
-  translation.y() = (p(7) - cy_rgb * translation.z()) / fy_rgb;
-  rotation(2, 0) = p(8);
-  rotation(2, 1) = p(9);
-  rotation(2, 2) = p(10);
-  rotation(0, 0) = (p(0) - cx_rgb * rotation(2, 0)) / fx_rgb;
-  rotation(0, 1) = (p(1) - cx_rgb * rotation(2, 1)) / fx_rgb;
-  rotation(0, 2) = (p(2) - cx_rgb * rotation(2, 2)) / fx_rgb;
-  rotation(1, 0) = (p(4) - cy_rgb * rotation(2, 0)) / fy_rgb;
-  rotation(1, 1) = (p(5) - cy_rgb * rotation(2, 1)) / fy_rgb;
-  rotation(1, 2) = (p(6) - cy_rgb * rotation(2, 2)) / fy_rgb;
+  Eigen::Vector3d translation_scaled{0.0, 0.0, 0.0};
+  Eigen::Matrix3d rotation_scaled{};
+  translation_scaled.z() = p_scaled(11);
+  translation_scaled.x() = (p_scaled(3) - cx_rgb * translation_scaled.z()) / fx_rgb;
+  translation_scaled.y() = (p_scaled(7) - cy_rgb * translation_scaled.z()) / fy_rgb;
+  rotation_scaled(2, 0) = p_scaled(8);
+  rotation_scaled(2, 1) = p_scaled(9);
+  rotation_scaled(2, 2) = p_scaled(10);
+  rotation_scaled(0, 0) = (p_scaled(0) - cx_rgb * rotation_scaled(2, 0)) / fx_rgb;
+  rotation_scaled(0, 1) = (p_scaled(1) - cx_rgb * rotation_scaled(2, 1)) / fx_rgb;
+  rotation_scaled(0, 2) = (p_scaled(2) - cx_rgb * rotation_scaled(2, 2)) / fx_rgb;
+  rotation_scaled(1, 0) = (p_scaled(4) - cy_rgb * rotation_scaled(2, 0)) / fy_rgb;
+  rotation_scaled(1, 1) = (p_scaled(5) - cy_rgb * rotation_scaled(2, 1)) / fy_rgb;
+  rotation_scaled(1, 2) = (p_scaled(6) - cy_rgb * rotation_scaled(2, 2)) / fy_rgb;
 
-  Eigen::JacobiSVD<Eigen::Matrix3d> svd_rot(rotation, Eigen::ComputeThinU | Eigen::ComputeThinV);
+  Eigen::JacobiSVD<Eigen::Matrix3d> svd_rot(rotation_scaled, Eigen::ComputeThinU | Eigen::ComputeThinV);
   Eigen::Matrix3d rotation_orthogonal = svd_rot.matrixU() * svd_rot.matrixV().transpose();
+  double scale = svd_rot.singularValues()(1); // get the median
 
-  std::cout << "Translation: " << std::endl
-            << translation << std::endl;
-  std::cout << "Rotation: " << std::endl
-            << (rotation) << std::endl;
-  std::cout << "Rotation orthogoonal: " << std::endl
-            << (rotation_orthogonal) << std::endl;
-  return Eigen::Affine3d{};
+  Eigen::VectorXd p = 1.0 / scale * p_scaled;
+  Eigen::Vector3d translation{0.0, 0.0, 0.0};
+  translation.z() = p(11);
+  translation.x() = (p(3) - cx_rgb * translation_scaled.z()) / fx_rgb;
+  translation.y() = (p(7) - cy_rgb * translation_scaled.z()) / fy_rgb;
+
+  Eigen::Affine3d cur_T_prev;
+  cur_T_prev.translation() = translation;
+  cur_T_prev.linear() = rotation_orthogonal;
+
+  Eigen::Affine3d prev_T_cur = cur_T_prev.inverse();
+
+  return prev_T_cur;
 }
 
 cv::Mat RGBDSlam::DrawKeypoints(const cv::Mat &rgb_im)
@@ -357,6 +367,13 @@ void RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::M
 
   // estimate relative pose between previous and current time
   Eigen::Affine3d prev_T_cur = EstimateRelativePose(tracking_result);
+
+  if (!std::isnan(prev_T_cur.matrix()(0, 3)))
+  {
+    start_T_cur = start_T_cur * prev_T_cur;
+  }
+  std::cout << start_T_cur.translation() << std::endl
+            << "---" << std::endl;
 
   // last actions
   rgb_im_.copyTo(rgb_im_prev_);
