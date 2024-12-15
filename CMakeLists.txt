@@ -46,6 +46,10 @@ add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDSlam.cpp)
 ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
 target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
 
+add_executable(depth_image_odometry_node src/depth_image_odometry_node.cpp src/DepthImageOdometry.cpp)
+ament_target_dependencies(depth_image_odometry_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
+target_link_libraries(depth_image_odometry_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
+
 #add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDOdometry.cpp src/ICPOdometry.cpp src/VoxelHashMap.cpp)
 #ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
 #target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX 
@@ -59,6 +63,7 @@ install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 
 install(TARGETS
   rgbd_slam_node
+  depth_image_odometry_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
