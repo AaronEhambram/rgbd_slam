@@ -5,13 +5,20 @@
 
 DepthImageOdometry::DepthImageOdometry(const CalibartionParameters &calibration_params) : calibration_params_{calibration_params}
 {
+  start_T_cur_ = Eigen::Isometry3d::Identity();
 }
 
 void DepthImageOdometry::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::Mat &depth_im)
 {
   if (prev_depth_im_.size() == depth_im.size())
   {
-    std::cout << NumericJacobian(prev_depth_im_, depth_im, Eigen::Isometry3d::Identity()) << std::endl;
+    // std::cout << "sum: " << DetermineDepthError(prev_depth_im_, depth_im, Eigen::Isometry3d::Identity()) << std::endl
+    //           << "---" << std::endl;
+    // std::cout << NumericJacobian(prev_depth_im_, depth_im, Eigen::Isometry3d::Identity()) << std::endl
+    //          << "---" << std::endl;
+    start_T_cur_ = start_T_cur_ * OptimizePose(prev_depth_im_, depth_im, Eigen::Isometry3d::Identity());
+    std::cout << start_T_cur_.matrix() << std::endl
+              << std::endl;
 
     // Visualize
     cv::Mat depth_im_scaled;
@@ -47,6 +54,7 @@ double DepthImageOdometry::DetermineDepthError(const cv::Mat &prev_depth_im, con
         {
           // Does not contribute to error
           error_sum += 0.0;
+          continue;
         }
         Eigen::Vector3d p_prev;
         p_prev << static_cast<double>(depth_prev) * (static_cast<double>(u_prev) - cx_depth) / fx_depth,
@@ -59,21 +67,29 @@ double DepthImageOdometry::DetermineDepthError(const cv::Mat &prev_depth_im, con
 
         // 3. project to current depth image -> provides pixel points
         const double &depth_cur_expected = p_cur.z();
-        const int u_cur = static_cast<int>(round(fx_depth * p_cur.x() + cx_depth * depth_cur_expected));
-        const int v_cur = static_cast<int>(round(fx_depth * p_cur.y() + cy_depth * depth_cur_expected));
+        if (std::abs(depth_cur_expected) < 1e-10)
+        {
+          // Does not contribute to error
+          error_sum += 0.0;
+          continue;
+        }
+        const int u_cur = static_cast<int>(round(fx_depth * p_cur.x() / depth_cur_expected + cx_depth));
+        const int v_cur = static_cast<int>(round(fy_depth * p_cur.y() / depth_cur_expected + cy_depth));
 
         // 4. get the depth measured depth value at the pixel position
         if (u_cur >= 0 && v_cur >= 0 && u_cur < cur_depth_im.cols && v_cur < cur_depth_im.rows)
         {
-          const unsigned short &depth_cur_measured = cur_depth_im.at<unsigned short>(v_prev, u_prev);
-          if (depth_cur_measured > 0)
+          const unsigned short &depth_cur_measured = cur_depth_im.at<unsigned short>(v_cur, u_cur);
+          if (depth_cur_measured > 0U)
           {
-            error_sum += pow((static_cast<double>(depth_cur_measured) * 0.001 - depth_cur_expected), 2.0);
+            double depth_error = (static_cast<double>(depth_cur_measured) * 0.001 - depth_cur_expected);
+            error_sum += (depth_error);
           }
         }
         else
         {
           error_sum += 0.0;
+          continue;
         }
       }
     }
@@ -87,20 +103,84 @@ Eigen::Matrix<double, 1, 6> DepthImageOdometry::NumericJacobian(const cv::Mat &p
   Eigen::Vector<double, 6> prev_xi_cur = ToPoseVector(prev_T_cur);
 
   // iterate through each dimension and compute differences
-  double diff_step = 1e-4;
+  double diff_step = 1e-3;
   Eigen::Matrix<double, 1, 6> J{};
-  for(int i = 0; i < 6; ++i)
+  for (int i = 0; i < 6; ++i)
   {
     Eigen::Vector<double, 6> prev_xi_cur_low{prev_xi_cur};
     prev_xi_cur_low(i) -= diff_step;
     Eigen::Vector<double, 6> prev_xi_cur_high{prev_xi_cur};
-    prev_xi_cur_low(i) += diff_step;
+    prev_xi_cur_high(i) += diff_step;
     const double error_low = DetermineDepthError(prev_depth_im, cur_depth_im, ToIsometry(prev_xi_cur_low));
     const double error_high = DetermineDepthError(prev_depth_im, cur_depth_im, ToIsometry(prev_xi_cur_high));
-    J(0,i) = ((error_high - error_low)/(2.0*diff_step));
+    J(0, i) = ((error_high - error_low) / (2.0 * diff_step));
   }
 
   return J;
+}
+
+Eigen::Isometry3d DepthImageOdometry::OptimizePose(const cv::Mat &prev_depth_im, const cv::Mat &cur_depth_im, const Eigen::Isometry3d &prev_T_cur) const
+{
+  int iterations = 0;
+  double v = 2.0;
+  double epsilon1 = 1e-12;
+  double epsilon2 = 1e-12;
+  double tau = 1e-12;
+  double roh = -1.0;
+  Eigen::Isometry3d pose_isometry = prev_T_cur;
+  Eigen::Isometry3d new_pose_isometry{};
+  Eigen::Vector<double, 6> pose_vector = ToPoseVector(prev_T_cur);
+  Eigen::Vector<double, 6> new_pose_vector{};
+  Eigen::Vector<double, 6> pose_vector_delta{};
+  Eigen::Matrix<double, 1, 6> J = NumericJacobian(prev_depth_im, cur_depth_im, pose_isometry);
+  Eigen::Matrix<double, 6, 6> A = J.transpose() * J;
+  double mu = tau * A.diagonal().maxCoeff();
+  Eigen::Matrix<double, 6, 6> M{};
+  double error = -DetermineDepthError(prev_depth_im, cur_depth_im, pose_isometry);
+  double new_error{0.0};
+  Eigen::Vector<double, 6> g = J.transpose() * error;
+  bool stop = (g.lpNorm<Eigen::Infinity>() <= epsilon1);
+  while (!stop && iterations < 100)
+  {
+    iterations++;
+    while (!stop && roh <= 0.0)
+    {
+      M = A + mu * Eigen::Matrix<double, 6, 6>::Identity();
+      pose_vector_delta = M.householderQr().solve(g);
+      // std::cout << "delta: " << pose_vector_delta << std::endl;
+      if (pose_vector_delta.norm() <= epsilon2 * pose_vector.norm())
+      {
+        stop = true;
+      }
+      else
+      {
+        new_pose_vector = pose_vector + pose_vector_delta;
+        new_pose_isometry = ToIsometry(new_pose_vector);
+        new_error = -DetermineDepthError(prev_depth_im, cur_depth_im, new_pose_isometry);
+        roh = (pow(error, 2.0) - pow(new_error, 2.0)) / (pose_vector_delta.transpose() * (mu * pose_vector_delta + g));
+        if (roh > 0.0)
+        {
+          // take update
+          pose_vector = new_pose_vector;
+          pose_isometry = new_pose_isometry;
+          J = NumericJacobian(prev_depth_im, cur_depth_im, pose_isometry);
+          A = J.transpose() * J;
+          error = -DetermineDepthError(prev_depth_im, cur_depth_im, pose_isometry);
+          g = J.transpose() * error;
+          stop = (g.lpNorm<Eigen::Infinity>() <= epsilon1);
+          mu = mu * std::max(1.0 / 3.0, 1 - pow((2.0 * roh - 1), 3.0));
+          v = 2.0;
+        }
+        else
+        {
+          // increase damping
+          mu *= v;
+          v *= 2.0;
+        }
+      }
+    }
+  }
+  return pose_isometry;
 }
 
 Eigen::Vector<double, 6> DepthImageOdometry::ToPoseVector(const Eigen::Isometry3d &pose_isometry) const
