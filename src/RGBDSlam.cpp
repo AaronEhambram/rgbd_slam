@@ -209,12 +209,22 @@ TrackingResult RGBDSlam::DetectTrackFeatures()
     DetectNewFeatures(new_detection_mask_indices);
   }
 
+  // fill 3d data
+  tracking_result.previous_keypoints_3d.resize(tracking_result.previous_keypoints.size());
+  tracking_result.current_keypoints_3d.resize(tracking_result.current_keypoints.size());
+#pragma omp parallel for
+  for (int i = 0; i < tracking_result.previous_keypoints.size(); ++i)
+  {
+    tracking_result.previous_keypoints_3d[i] = Get3DPoint(tracking_result.previous_keypoints[i], depth_im_prev_);
+    tracking_result.current_keypoints_3d[i] = Get3DPoint(tracking_result.current_keypoints[i], depth_im_);
+  }
+
   return tracking_result;
 }
 
-std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint) const
+std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint, const cv::Mat &depth_im) const
 {
-  uint16_t depth_in_mm = depth_im_prev_.at<uint16_t>(keypoint.pt.y, keypoint.pt.x);
+  uint16_t depth_in_mm = depth_im.at<uint16_t>(keypoint.pt.y, keypoint.pt.x);
   std::optional<Eigen::Vector3d> point{};
   if (depth_in_mm > 0)
   {
@@ -233,7 +243,7 @@ double RGBDSlam::DetermineWeight(const float &tracking_error) const
   return std::exp(-std::pow(static_cast<double>(tracking_error), 2.0) / (2.0 * std::pow(slam_params_.max_optical_flow_error / 4.0, 2.0)));
 }
 
-Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_result) const
+Eigen::Affine3d RGBDSlam::EstimateRelativePoseSVD(const TrackingResult &tracking_result) const
 {
   Eigen::MatrixXd A(tracking_result.previous_keypoints.size() * 2, 12);
   A.setZero();
@@ -249,7 +259,7 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
     const float &tracking_error = tracking_result.tracking_error[kp_counter];
 
     // 1. Determine 3D points from previous frame
-    std::optional<Eigen::Vector3d> opt_point_3d_prev = Get3DPoint(prev_kp);
+    std::optional<Eigen::Vector3d> opt_point_3d_prev = Get3DPoint(prev_kp, depth_im_prev_);
 
     if (opt_point_3d_prev.has_value())
     {
@@ -338,6 +348,129 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePose(const TrackingResult &tracking_re
   return prev_T_cur;
 }
 
+Eigen::Affine3d RGBDSlam::EstimateRelativePoseOptimization(const TrackingResult &tracking_result) const
+{
+  int iterations = 0;
+  double v = 2.0;
+  double epsilon1 = 1e-12;
+  double epsilon2 = 1e-6;
+  double tau = 1e-12;
+  double roh = -1.0;
+  Eigen::Affine3d pose_affine = Eigen::Affine3d::Identity();
+  Eigen::Affine3d new_pose_affine{};
+  Eigen::Vector<double, 6> pose_vector = ToVector(pose_affine);
+  Eigen::Vector<double, 6> new_pose_vector{};
+  Eigen::Vector<double, 6> pose_vector_delta{};
+  Eigen::Matrix<double, 1, 6> J = NumericReprojectionJacobian(tracking_result, pose_affine);
+  Eigen::Matrix<double, 6, 6> A = J.transpose() * J;
+  double mu = tau * A.diagonal().maxCoeff();
+  Eigen::Matrix<double, 6, 6> M{};
+  double error = -ReprojectionError(tracking_result, pose_affine);
+  double new_error{0.0};
+  Eigen::Vector<double, 6> g = J.transpose() * error;
+  bool stop = (g.lpNorm<Eigen::Infinity>() <= epsilon1);
+  while (iterations < 100)
+  {
+    iterations++;
+    roh = -1.0;
+    while (!stop && roh <= 0.0)
+    {
+      M = A + mu * Eigen::Matrix<double, 6, 6>::Identity();
+      pose_vector_delta = M.householderQr().solve(g);
+      if (pose_vector_delta.norm() <= epsilon2)
+      {
+        stop = true;
+      }
+      else
+      {
+        new_pose_vector = pose_vector + pose_vector_delta;
+        new_pose_affine = ToAffine(new_pose_vector);
+        new_error = -ReprojectionError(tracking_result, new_pose_affine);
+        roh = (pow(error, 2.0) - pow(new_error, 2.0)) / (pose_vector_delta.transpose() * (mu * pose_vector_delta + g));
+        if (roh > 0.0)
+        {
+          // take update
+          pose_vector = new_pose_vector;
+          pose_affine = new_pose_affine;
+          J = NumericReprojectionJacobian(tracking_result, pose_affine);
+          A = J.transpose() * J;
+          error = new_error;
+          g = J.transpose() * error;
+          stop = (g.lpNorm<Eigen::Infinity>() <= epsilon1);
+          mu = mu * std::max(1.0 / 3.0, 1 - pow((2.0 * roh - 1), 3.0));
+          v = 2.0;
+        }
+        else
+        {
+          // increase damping
+          mu *= v;
+          v *= 2.0;
+        }
+      }
+    }
+  }
+  return pose_affine;
+}
+
+Eigen::Matrix<double, 1, 6> RGBDSlam::NumericReprojectionJacobian(const TrackingResult &tracking_result, const Eigen::Affine3d prev_T_cur) const
+{
+// determine minimal parametric representation of the pose
+  Eigen::Vector<double, 6> prev_xi_cur = ToVector(prev_T_cur);
+
+  // iterate through each dimension and compute differences
+  Eigen::Vector<double, 6> diff_step;
+  diff_step(0) = 1e-6;
+  diff_step(1) = 1e-6;
+  diff_step(2) = 1e-6;
+  diff_step(3) = 1e-6;
+  diff_step(4) = 1e-6;
+  diff_step(5) = 1e-6;
+  Eigen::Matrix<double, 1, 6> J{};
+  for (int i = 0; i < 6; ++i)
+  {
+    Eigen::Vector<double, 6> prev_xi_cur_low{prev_xi_cur};
+    prev_xi_cur_low(i) -= diff_step(i);
+    Eigen::Vector<double, 6> prev_xi_cur_high{prev_xi_cur};
+    prev_xi_cur_high(i) += diff_step(i);
+    const double error_low = ReprojectionError(tracking_result, ToAffine(prev_xi_cur_low));
+    const double error_high = ReprojectionError(tracking_result, ToAffine(prev_xi_cur_high));
+    J(0, i) = ((error_high - error_low) / (2.0 * diff_step(i)));
+  }
+  return J;
+}
+
+double RGBDSlam::ReprojectionError(const TrackingResult &tracking_result, const Eigen::Affine3d prev_T_cur) const
+{
+  const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
+  const double &fy_rgb = calibration_params_.rgb_cam.at<double>(1, 1);
+  const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
+  const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
+  double error_sum = 0.0;
+#pragma omp parallel reduction(+ : error_sum)
+  {
+#pragma omp for
+    for (int i = 0; i < tracking_result.previous_keypoints_3d.size(); i++)
+    {
+      const std::optional<Eigen::Vector3d> &p_prev = tracking_result.previous_keypoints_3d[i];
+      if (p_prev.has_value())
+      {
+        // get the 3D point
+        Eigen::Vector3d p_cur = prev_T_cur.inverse() * p_prev.value();
+        // project to current frame
+        const double u_cur_subpixel = (fx_rgb * p_cur.x() / p_cur.z() + cx_rgb);
+        const double v_cur_subpixel = (fy_rgb * p_cur.y() / p_cur.z() + cy_rgb);
+        // get measured pixel point in current
+        const cv::Point2f &measured_pixel_point_cur = tracking_result.current_keypoints[i].pt;
+        // determine weighted error error
+        const double u_error = u_cur_subpixel - static_cast<double>(measured_pixel_point_cur.x);
+        const double v_error = v_cur_subpixel - static_cast<double>(measured_pixel_point_cur.y);
+        error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+      }
+    }
+  }
+  return error_sum;
+}
+
 cv::Mat RGBDSlam::DrawKeypoints(const cv::Mat &rgb_im)
 {
   cv::Mat keypoints_im;
@@ -366,13 +499,14 @@ void RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::M
   TrackingResult tracking_result = DetectTrackFeatures();
 
   // estimate relative pose between previous and current time
-  Eigen::Affine3d prev_T_cur = EstimateRelativePose(tracking_result);
+  // Eigen::Affine3d prev_T_cur = EstimateRelativePoseSVD(tracking_result);
+  Eigen::Affine3d prev_T_cur = EstimateRelativePoseOptimization(tracking_result);
 
   if (!std::isnan(prev_T_cur.matrix()(0, 3)))
   {
     start_T_cur = start_T_cur * prev_T_cur;
   }
-  std::cout << start_T_cur.translation() << std::endl
+  std::cout << start_T_cur.matrix() << std::endl
             << "---" << std::endl;
 
   // last actions

@@ -15,7 +15,9 @@
 struct TrackingResult
 {
   std::vector<cv::KeyPoint> previous_keypoints;
+  std::vector<std::optional<Eigen::Vector3d>> previous_keypoints_3d;
   std::vector<cv::KeyPoint> current_keypoints;
+  std::vector<std::optional<Eigen::Vector3d>> current_keypoints_3d;
   std::vector<float> tracking_error;
 };
 
@@ -45,9 +47,12 @@ private:
   cv::Mat KeypointsToMat(const std::vector<cv::KeyPoint> &keypoints);
 
   // Pose estimation
-  Eigen::Affine3d EstimateRelativePose(const TrackingResult& tracking_result) const;
-  std::optional<Eigen::Vector3d> Get3DPoint(const cv::KeyPoint& keypoint) const;
-  double DetermineWeight(const float& tracking_error) const;
+  Eigen::Affine3d EstimateRelativePoseSVD(const TrackingResult &tracking_result) const;
+  Eigen::Affine3d EstimateRelativePoseOptimization(const TrackingResult &tracking_result) const;
+  double ReprojectionError(const TrackingResult &tracking_result, const Eigen::Affine3d prev_T_cur) const;
+  Eigen::Matrix<double, 1, 6> NumericReprojectionJacobian(const TrackingResult &tracking_result, const Eigen::Affine3d prev_T_cur) const;
+  std::optional<Eigen::Vector3d> Get3DPoint(const cv::KeyPoint &keypoint, const cv::Mat &depth_im) const;
+  double DetermineWeight(const float &tracking_error) const;
   Eigen::Affine3d start_T_cur{};
 
   // Visualization
