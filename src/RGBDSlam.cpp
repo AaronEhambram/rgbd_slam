@@ -469,7 +469,16 @@ double RGBDSlam::ReprojectionError(const TrackingResult &tracking_result, const 
         // determine weighted error error
         const double u_error = u_cur_subpixel - static_cast<double>(measured_pixel_point_cur.x);
         const double v_error = v_cur_subpixel - static_cast<double>(measured_pixel_point_cur.y);
-        error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+        const double pixel_error = pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+
+        // 3d position error
+        double position_error_3d{0.0};
+        if (p_cur.has_value())
+        {
+          position_error_3d = (p_cur_expected - p_cur.value()).norm();
+        }
+
+        error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pixel_error + position_error_3d;
       }
       else
       {
@@ -486,7 +495,16 @@ double RGBDSlam::ReprojectionError(const TrackingResult &tracking_result, const 
           // determine weighted error error
           const double u_error = u_prev_subpixel - static_cast<double>(measured_pixel_point_prev.x);
           const double v_error = v_prev_subpixel - static_cast<double>(measured_pixel_point_prev.y);
-          error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+          const double pixel_error = pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+
+          // 3d position error
+          double position_error_3d{0.0};
+          if (p_prev.has_value())
+          {
+            position_error_3d = (p_prev_expected - p_prev.value()).norm();
+          }
+
+          error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pixel_error + position_error_3d;
         }
       }
     }
@@ -538,7 +556,9 @@ Eigen::Affine3d RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, 
 
   // show the image
   cv::Mat keypoint_rgb_im = DrawKeypoints(rgb_im);
-  cv::imshow("depth image", depth_im);
+  cv::Mat depth_im_scaled;
+  depth_im.convertTo(depth_im_scaled, CV_32F, 0.0001, 0);
+  cv::imshow("depth image", depth_im_scaled);
   cv::imshow("rgb image", keypoint_rgb_im);
   cv::waitKey(1);
 
