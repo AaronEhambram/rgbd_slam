@@ -43,7 +43,7 @@ include_directories(
 )
 
 add_executable(rgbd_slam_node src/rgbd_slam_node.cpp src/RGBDSlam.cpp)
-ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs)
+ament_target_dependencies(rgbd_slam_node rclcpp std_msgs cv_bridge sensor_msgs message_filters pcl_conversions geometry_msgs tf2_ros)
 target_link_libraries(rgbd_slam_node ${OpenCV_LIBS} OpenMP::OpenMP_CXX)
 
 add_executable(depth_image_odometry_node src/depth_image_odometry_node.cpp src/DepthImageOdometry.cpp)

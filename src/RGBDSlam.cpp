@@ -224,15 +224,16 @@ TrackingResult RGBDSlam::DetectTrackFeatures()
 
 std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint, const cv::Mat &depth_im) const
 {
+  // primitive depth assignment and 3D reconstruction
+  const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
+  const double &fy_rgb = calibration_params_.rgb_cam.at<double>(1, 1);
+  const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
+  const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
   uint16_t depth_in_mm = depth_im.at<uint16_t>(keypoint.pt.y, keypoint.pt.x);
   std::optional<Eigen::Vector3d> point{};
   if (depth_in_mm > 0)
   {
     const double depth = 1e-3 * depth_in_mm;
-    const double &fx_rgb = calibration_params_.rgb_cam.at<double>(0, 0);
-    const double &fy_rgb = calibration_params_.rgb_cam.at<double>(1, 1);
-    const double &cx_rgb = calibration_params_.rgb_cam.at<double>(0, 2);
-    const double &cy_rgb = calibration_params_.rgb_cam.at<double>(1, 2);
     return Eigen::Vector3d{depth * ((double)keypoint.pt.x - cx_rgb) / fx_rgb, (double)depth * ((double)keypoint.pt.y - cy_rgb) / fy_rgb, depth};
   }
   return point;
@@ -240,7 +241,8 @@ std::optional<Eigen::Vector3d> RGBDSlam::Get3DPoint(const cv::KeyPoint &keypoint
 
 double RGBDSlam::DetermineWeight(const float &tracking_error) const
 {
-  return std::exp(-std::pow(static_cast<double>(tracking_error), 2.0) / (2.0 * std::pow(slam_params_.max_optical_flow_error / 4.0, 2.0)));
+  // desmos: https://www.desmos.com/calculator/lrg6rupruq
+  return std::exp(-std::pow(static_cast<double>(tracking_error), 2.0) / (2.0 * std::pow(slam_params_.max_optical_flow_error / 11.0, 2.0)));
 }
 
 Eigen::Affine3d RGBDSlam::EstimateRelativePoseSVD(const TrackingResult &tracking_result) const
@@ -373,6 +375,8 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePoseOptimization(const TrackingResult 
   {
     iterations++;
     roh = -1.0;
+    std::cout << "error: " << error << std::endl
+              << "----------" << std::endl;
     while (!stop && roh <= 0.0)
     {
       M = A + mu * Eigen::Matrix<double, 6, 6>::Identity();
@@ -414,17 +418,17 @@ Eigen::Affine3d RGBDSlam::EstimateRelativePoseOptimization(const TrackingResult 
 
 Eigen::Matrix<double, 1, 6> RGBDSlam::NumericReprojectionJacobian(const TrackingResult &tracking_result, const Eigen::Affine3d prev_T_cur) const
 {
-// determine minimal parametric representation of the pose
+  // determine minimal parametric representation of the pose
   Eigen::Vector<double, 6> prev_xi_cur = ToVector(prev_T_cur);
 
   // iterate through each dimension and compute differences
   Eigen::Vector<double, 6> diff_step;
-  diff_step(0) = 1e-6;
-  diff_step(1) = 1e-6;
-  diff_step(2) = 1e-6;
-  diff_step(3) = 1e-6;
-  diff_step(4) = 1e-6;
-  diff_step(5) = 1e-6;
+  diff_step(0) = 1e-5;
+  diff_step(1) = 1e-5;
+  diff_step(2) = 1e-5;
+  diff_step(3) = 1e-5;
+  diff_step(4) = 1e-5;
+  diff_step(5) = 1e-5;
   Eigen::Matrix<double, 1, 6> J{};
   for (int i = 0; i < 6; ++i)
   {
@@ -452,19 +456,38 @@ double RGBDSlam::ReprojectionError(const TrackingResult &tracking_result, const 
     for (int i = 0; i < tracking_result.previous_keypoints_3d.size(); i++)
     {
       const std::optional<Eigen::Vector3d> &p_prev = tracking_result.previous_keypoints_3d[i];
+      const std::optional<Eigen::Vector3d> &p_cur = tracking_result.current_keypoints_3d[i];
       if (p_prev.has_value())
       {
         // get the 3D point
-        Eigen::Vector3d p_cur = prev_T_cur.inverse() * p_prev.value();
+        Eigen::Vector3d p_cur_expected = prev_T_cur.inverse() * p_prev.value();
         // project to current frame
-        const double u_cur_subpixel = (fx_rgb * p_cur.x() / p_cur.z() + cx_rgb);
-        const double v_cur_subpixel = (fy_rgb * p_cur.y() / p_cur.z() + cy_rgb);
+        const double u_cur_subpixel = (fx_rgb * p_cur_expected.x() / p_cur_expected.z() + cx_rgb);
+        const double v_cur_subpixel = (fy_rgb * p_cur_expected.y() / p_cur_expected.z() + cy_rgb);
         // get measured pixel point in current
         const cv::Point2f &measured_pixel_point_cur = tracking_result.current_keypoints[i].pt;
         // determine weighted error error
         const double u_error = u_cur_subpixel - static_cast<double>(measured_pixel_point_cur.x);
         const double v_error = v_cur_subpixel - static_cast<double>(measured_pixel_point_cur.y);
         error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+      }
+      else
+      {
+        if (p_cur.has_value())
+        {
+          // in the current frame there is a depth estimate
+          // get the 3D point
+          const Eigen::Vector3d p_prev_expected = prev_T_cur * p_cur.value();
+          // project to current frame
+          const double u_prev_subpixel = (fx_rgb * p_prev_expected.x() / p_prev_expected.z() + cx_rgb);
+          const double v_prev_subpixel = (fy_rgb * p_prev_expected.y() / p_prev_expected.z() + cy_rgb);
+          // get measured pixel point in current
+          const cv::Point2f &measured_pixel_point_prev = tracking_result.previous_keypoints[i].pt;
+          // determine weighted error error
+          const double u_error = u_prev_subpixel - static_cast<double>(measured_pixel_point_prev.x);
+          const double v_error = v_prev_subpixel - static_cast<double>(measured_pixel_point_prev.y);
+          error_sum += DetermineWeight(tracking_result.tracking_error[i]) * pow((pow(u_error, 2.0) + pow(v_error, 2.0)), 0.5);
+        }
       }
     }
   }
@@ -486,7 +509,7 @@ cv::Mat RGBDSlam::DrawKeypoints(const cv::Mat &rgb_im)
   return keypoints_im;
 }
 
-void RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::Mat &depth_im)
+Eigen::Affine3d RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::Mat &depth_im)
 {
   std::cout << "Timestamp:\t" << std::setprecision(15) << timestamp << std::endl;
 
@@ -518,4 +541,6 @@ void RGBDSlam::Track(const double &timestamp, const cv::Mat &rgb_im, const cv::M
   cv::imshow("depth image", depth_im);
   cv::imshow("rgb image", keypoint_rgb_im);
   cv::waitKey(1);
+
+  return start_T_cur;
 }

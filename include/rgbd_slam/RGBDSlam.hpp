@@ -25,7 +25,7 @@ class RGBDSlam
 {
 public:
   RGBDSlam(const CalibartionParameters &calibration_params, const RGBDSLAMParameters &slam_params);
-  void Track(const double &timestamp, const cv::Mat &rgb_im, const cv::Mat &depth_im);
+  Eigen::Affine3d Track(const double &timestamp, const cv::Mat &rgb_im, const cv::Mat &depth_im);
 
 private:
   CalibartionParameters calibration_params_;

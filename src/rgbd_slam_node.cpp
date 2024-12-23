@@ -10,6 +10,8 @@
 #include <omp.h>
 #include "rgbd_slam/types.hpp"
 #include "rgbd_slam/RGBDSlam.hpp"
+#include "tf2_ros/transform_broadcaster.h"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 
 class RgbdSlamNode : public rclcpp::Node
 {
@@ -55,6 +57,10 @@ public:
     depth_sub.subscribe(this, depth_topic);
     sync.reset(new Sync(MySyncPolicy(10), rgb_sub, depth_sub));
     sync->registerCallback(std::bind(&RgbdSlamNode::callback, this, std::placeholders::_1, std::placeholders::_2));
+
+    // Initialize the transform broadcaster
+    tf_broadcaster_ =
+        std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
 private:
@@ -67,6 +73,9 @@ private:
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> MySyncPolicy;
   typedef message_filters::Synchronizer<MySyncPolicy> Sync;
   std::shared_ptr<Sync> sync;
+
+  // tf broadcaster
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   // SLAM parameters
   RGBDSLAMParameters rgbd_slam_params_{};
@@ -111,7 +120,23 @@ private:
     depth_cv_ptr->image.copyTo(depth_im);
     double timestamp = rgb_cv_ptr->header.stamp.sec + rgb_cv_ptr->header.stamp.nanosec * 1e-9;
 
-    rgbd_slam_ptr_->Track(timestamp, rgb_im, depth_im);
+    const Eigen::Affine3d start_T_cur = rgbd_slam_ptr_->Track(timestamp, rgb_im, depth_im);
+
+    // create tf2 broadcast topic
+    geometry_msgs::msg::TransformStamped t;
+    t.header.stamp = rgb_im_msg->header.stamp;
+    t.header.frame_id = "rgbd_slam_init";
+    t.child_frame_id = "rgbd_slam_current";
+    t.transform.translation.x = start_T_cur.translation().x();
+    t.transform.translation.y = start_T_cur.translation().y();
+    t.transform.translation.z = start_T_cur.translation().z();
+    Eigen::Quaterniond quaternion{start_T_cur.linear()};
+    t.transform.rotation.x = quaternion.x();
+    t.transform.rotation.y = quaternion.y();
+    t.transform.rotation.z = quaternion.z();
+    t.transform.rotation.w = quaternion.w();
+    // Send the transformation
+    tf_broadcaster_->sendTransform(t);
   }
 };
 
